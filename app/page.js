@@ -163,7 +163,11 @@ export default function DashboardPage() {
                 <tbody>
                   {rodadas.map((r) => (
                     <tr key={r.survey_id}>
-                      <td>{r.titulo}</td>
+                      <td>
+                        <Link className="link-row" href={`/rodada/${r.survey_id}`}>
+                          {r.titulo}
+                        </Link>
+                      </td>
                       <td>
                         {new Date(r.mes_referencia + "T12:00:00").toLocaleDateString("pt-BR", {
                           month: "long",
