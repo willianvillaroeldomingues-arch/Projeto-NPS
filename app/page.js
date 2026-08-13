@@ -1,53 +1,91 @@
-"use client";
 
+"use client";
+ 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import { useAuthGuard } from "../lib/useAuthGuard";
-
+ 
 function Categoria({ score }) {
   if (score === null || score === undefined) return "—";
   return score;
 }
-
+ 
 export default function DashboardPage() {
   const pronto = useAuthGuard();
-  const [evolucao, setEvolucao] = useState([]);
+  const [rodadas, setRodadas] = useState([]);
   const [clientes, setClientes] = useState([]);
   const [carregando, setCarregando] = useState(true);
-
+  const [apagando, setApagando] = useState(null); // id do item sendo apagado (mostra "Apagando...")
+ 
+  async function carregar() {
+    const [{ data: rd }, { data: cl }] = await Promise.all([
+      supabase.from("nps_por_survey").select("*").order("mes_referencia"),
+      supabase.from("nps_medio_por_cliente").select("*").order("nome"),
+    ]);
+    setRodadas(rd || []);
+    setClientes(cl || []);
+    setCarregando(false);
+  }
+ 
   useEffect(() => {
     if (!pronto) return;
-    async function carregar() {
-      const [{ data: ev }, { data: cl }] = await Promise.all([
-        supabase.from("nps_geral_evolucao").select("*"),
-        supabase.from("nps_medio_por_cliente").select("*").order("nome"),
-      ]);
-      setEvolucao(ev || []);
-      setClientes(cl || []);
-      setCarregando(false);
-    }
     carregar();
   }, [pronto]);
-
+ 
   if (!pronto) return null;
-
-  const ultimaRodada = evolucao[evolucao.length - 1];
+ 
+  const ultimaRodada = rodadas[rodadas.length - 1];
   const npsGeral =
-    evolucao.length > 0
-      ? Math.round(
-          evolucao.reduce((acc, e) => acc + (e.nps_score || 0), 0) / evolucao.length
-        )
+    rodadas.length > 0
+      ? Math.round(rodadas.reduce((acc, e) => acc + (e.nps_score || 0), 0) / rodadas.length)
       : null;
-
+ 
   async function sair() {
     await supabase.auth.signOut();
     window.location.href = "/login";
   }
-
+ 
+  async function apagarRodada(rodada) {
+    const confirmado = window.confirm(
+      `Apagar a rodada "${rodada.titulo}"?\n\nIsso vai apagar também as ${rodada.total_respostas} resposta(s) recebida(s) nela. Essa ação não pode ser desfeita.`
+    );
+    if (!confirmado) return;
+ 
+    setApagando(rodada.survey_id);
+    const { error } = await supabase.from("nps_surveys").delete().eq("id", rodada.survey_id);
+    setApagando(null);
+ 
+    if (error) {
+      alert("Não foi possível apagar a rodada. Tente novamente.");
+      return;
+    }
+    carregar();
+  }
+ 
+  async function apagarCliente(cliente) {
+    const confirmado = window.confirm(
+      `Apagar o cliente "${cliente.nome}"?\n\nIsso vai apagar também todo o histórico de respostas dele (${cliente.total_respostas} resposta(s)). Essa ação não pode ser desfeita.`
+    );
+    if (!confirmado) return;
+ 
+    setApagando(cliente.client_id);
+    const { error } = await supabase.from("clients").delete().eq("id", cliente.client_id);
+    setApagando(null);
+ 
+    if (error) {
+      alert("Não foi possível apagar o cliente. Tente novamente.");
+      return;
+    }
+    carregar();
+  }
+ 
   return (
     <div>
-      <div className="top-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div
+        className="top-bar"
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
+      >
         <div>
           <div className="eyebrow">Painel de NPS</div>
           <div className="title">Visão geral</div>
@@ -81,7 +119,7 @@ export default function DashboardPage() {
           </button>
         </div>
       </div>
-
+ 
       <div className="container">
         {carregando ? (
           <p>Carregando...</p>
@@ -90,7 +128,9 @@ export default function DashboardPage() {
             <div className="grid grid-3" style={{ marginBottom: 28 }}>
               <div className="card">
                 <div className="stat-label">NPS médio geral</div>
-                <div className="stat"><Categoria score={npsGeral} /></div>
+                <div className="stat">
+                  <Categoria score={npsGeral} />
+                </div>
               </div>
               <div className="card">
                 <div className="stat-label">Última rodada</div>
@@ -106,7 +146,7 @@ export default function DashboardPage() {
                 <div className="stat">{clientes.length}</div>
               </div>
             </div>
-
+ 
             <h2 style={{ fontFamily: "var(--font-display)", fontSize: 18, marginBottom: 12 }}>
               Evolução do NPS por rodada
             </h2>
@@ -118,20 +158,43 @@ export default function DashboardPage() {
                     <th>Mês</th>
                     <th>Respostas</th>
                     <th>NPS</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {evolucao.map((e) => (
-                    <tr key={e.titulo + e.mes_referencia}>
-                      <td>{e.titulo}</td>
-                      <td>{new Date(e.mes_referencia).toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</td>
-                      <td>{e.total_respostas}</td>
-                      <td>{e.nps_score ?? "—"}</td>
+                  {rodadas.map((r) => (
+                    <tr key={r.survey_id}>
+                      <td>{r.titulo}</td>
+                      <td>
+                        {new Date(r.mes_referencia + "T12:00:00").toLocaleDateString("pt-BR", {
+                          month: "long",
+                          year: "numeric",
+                        })}
+                      </td>
+                      <td>{r.total_respostas}</td>
+                      <td>{r.nps_score ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          onClick={() => apagarRodada(r)}
+                          disabled={apagando === r.survey_id}
+                          style={{
+                            background: "none",
+                            border: "1px solid var(--error)",
+                            color: "var(--error)",
+                            fontSize: 12,
+                            padding: "4px 10px",
+                            cursor: "pointer",
+                            opacity: apagando === r.survey_id ? 0.5 : 1,
+                          }}
+                        >
+                          {apagando === r.survey_id ? "Apagando..." : "Apagar"}
+                        </button>
+                      </td>
                     </tr>
                   ))}
-                  {evolucao.length === 0 && (
+                  {rodadas.length === 0 && (
                     <tr>
-                      <td colSpan={4} style={{ color: "var(--ink-soft)" }}>
+                      <td colSpan={5} style={{ color: "var(--ink-soft)" }}>
                         Nenhuma rodada de NPS enviada ainda.
                       </td>
                     </tr>
@@ -139,7 +202,7 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             </div>
-
+ 
             <h2 style={{ fontFamily: "var(--font-display)", fontSize: 18, marginBottom: 12 }}>
               Clientes
             </h2>
@@ -152,6 +215,7 @@ export default function DashboardPage() {
                     <th>Respostas</th>
                     <th>Nota média</th>
                     <th>NPS</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -166,11 +230,28 @@ export default function DashboardPage() {
                       <td>{c.total_respostas}</td>
                       <td>{c.nota_media ?? "—"}</td>
                       <td>{c.nps_score_medio ?? "—"}</td>
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          onClick={() => apagarCliente(c)}
+                          disabled={apagando === c.client_id}
+                          style={{
+                            background: "none",
+                            border: "1px solid var(--error)",
+                            color: "var(--error)",
+                            fontSize: 12,
+                            padding: "4px 10px",
+                            cursor: "pointer",
+                            opacity: apagando === c.client_id ? 0.5 : 1,
+                          }}
+                        >
+                          {apagando === c.client_id ? "Apagando..." : "Apagar"}
+                        </button>
+                      </td>
                     </tr>
                   ))}
                   {clientes.length === 0 && (
                     <tr>
-                      <td colSpan={5} style={{ color: "var(--ink-soft)" }}>
+                      <td colSpan={6} style={{ color: "var(--ink-soft)" }}>
                         Nenhum cliente cadastrado ainda.
                       </td>
                     </tr>
@@ -184,3 +265,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+ 
