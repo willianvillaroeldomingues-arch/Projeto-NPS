@@ -2,263 +2,242 @@
  
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { supabase } from "../lib/supabaseClient";
-import { useAuthGuard } from "../lib/useAuthGuard";
+import { supabase } from "../../lib/supabaseClient";
+import { useAuthGuard } from "../../lib/useAuthGuard";
  
-function Categoria({ score }) {
-  if (score === null || score === undefined) return "—";
-  return score;
-}
- 
-export default function DashboardPage() {
+export default function NovaRodadaPage() {
   const pronto = useAuthGuard();
-  const [rodadas, setRodadas] = useState([]);
-  const [clientes, setClientes] = useState([]);
-  const [carregando, setCarregando] = useState(true);
-  const [apagando, setApagando] = useState(null); // id do item sendo apagado (mostra "Apagando...")
- 
-  async function carregar() {
-    const [{ data: rd }, { data: cl }] = await Promise.all([
-      supabase.from("nps_por_survey").select("*").order("mes_referencia"),
-      supabase.from("nps_medio_por_cliente").select("*").order("nome"),
-    ]);
-    setRodadas(rd || []);
-    setClientes(cl || []);
-    setCarregando(false);
-  }
+  const [titulo, setTitulo] = useState("");
+  const [mes, setMes] = useState(() => new Date().toISOString().slice(0, 7)); // YYYY-MM
+  const [clientesAtivos, setClientesAtivos] = useState([]);
+  const [criando, setCriando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [linksGerados, setLinksGerados] = useState(null);
+  const [tituloRodada, setTituloRodada] = useState("");
  
   useEffect(() => {
     if (!pronto) return;
-    carregar();
+    supabase
+      .from("clients")
+      .select("id, nome")
+      .eq("status", "ativo")
+      .order("nome")
+      .then(({ data }) => setClientesAtivos(data || []));
   }, [pronto]);
  
   if (!pronto) return null;
  
-  const ultimaRodada = rodadas[rodadas.length - 1];
-  const npsGeral =
-    rodadas.length > 0
-      ? Math.round(rodadas.reduce((acc, e) => acc + (e.nps_score || 0), 0) / rodadas.length)
-      : null;
- 
-  async function sair() {
-    await supabase.auth.signOut();
-    window.location.href = "/login";
-  }
- 
-  async function apagarRodada(rodada) {
-    const confirmado = window.confirm(
-      `Apagar a rodada "${rodada.titulo}"?\n\nIsso vai apagar também as ${rodada.total_respostas} resposta(s) recebida(s) nela. Essa ação não pode ser desfeita.`
-    );
-    if (!confirmado) return;
- 
-    setApagando(rodada.survey_id);
-    const { error } = await supabase.from("nps_surveys").delete().eq("id", rodada.survey_id);
-    setApagando(null);
- 
-    if (error) {
-      alert("Não foi possível apagar a rodada. Tente novamente.");
+  async function criarRodada() {
+    setErro("");
+    if (!titulo.trim()) {
+      setErro("Dê um título para a rodada, ex: NPS Outubro/2026");
       return;
     }
-    carregar();
-  }
- 
-  async function apagarCliente(cliente) {
-    const confirmado = window.confirm(
-      `Apagar o cliente "${cliente.nome}"?\n\nIsso vai apagar também todo o histórico de respostas dele (${cliente.total_respostas} resposta(s)). Essa ação não pode ser desfeita.`
-    );
-    if (!confirmado) return;
- 
-    setApagando(cliente.client_id);
-    const { error } = await supabase.from("clients").delete().eq("id", cliente.client_id);
-    setApagando(null);
- 
-    if (error) {
-      alert("Não foi possível apagar o cliente. Tente novamente.");
+    if (clientesAtivos.length === 0) {
+      setErro("Não há clientes ativos cadastrados.");
       return;
     }
-    carregar();
+    setCriando(true);
+ 
+    const mesReferencia = `${mes}-01`;
+ 
+    const { data: survey, error: erroSurvey } = await supabase
+      .from("nps_surveys")
+      .insert({ titulo, mes_referencia: mesReferencia })
+      .select()
+      .single();
+ 
+    if (erroSurvey) {
+      setCriando(false);
+      setErro(
+        erroSurvey.message.includes("duplicate")
+          ? "Já existe uma rodada criada para esse mês."
+          : "Erro ao criar a rodada."
+      );
+      return;
+    }
+ 
+    const linksParaCriar = clientesAtivos.map((c) => ({
+      survey_id: survey.id,
+      client_id: c.id,
+    }));
+ 
+    const { data: links, error: erroLinks } = await supabase
+      .from("nps_form_links")
+      .insert(linksParaCriar)
+      .select("token, client_id");
+ 
+    setCriando(false);
+ 
+    if (erroLinks) {
+      setErro("Rodada criada, mas houve erro ao gerar os links.");
+      return;
+    }
+ 
+    const base = typeof window !== "undefined" ? window.location.origin : "";
+    const resultado = links.map((l) => {
+      const cliente = clientesAtivos.find((c) => c.id === l.client_id);
+      return { nome: cliente?.nome, url: `${base}/responder/${l.token}` };
+    });
+    setLinksGerados(resultado);
+    setTituloRodada(titulo);
+  }
+ 
+  function montarMensagem(primeiroNome, link) {
+    return `Olá, ${primeiroNome}! Tudo bem?
+ 
+Passando para pedir só um minutinho do seu tempo para preencher a nossa pesquisa de satisfação.
+ 
+A sua opinião é muito importante para nós, porque é através dela que conseguimos entender melhor a sua experiência, identificar pontos em que podemos melhorar e continuar oferecendo um atendimento cada vez mais próximo, cuidadoso e de excelência.
+Se puder responder, vai nos ajudar muito!
+ 
+🔗 Pesquisa de satisfação: ${link}
+ 
+Muito obrigado por fazer parte da nossa jornada e por contribuir para que possamos evoluir sempre!`;
+  }
+ 
+  function baixarCSV() {
+    const linhas = [
+      ["cliente", "link", "mensagem"],
+      ...linksGerados.map((l) => {
+        const primeiroNome = (l.nome || "").trim().split(" ")[0];
+        return [l.nome, l.url, montarMensagem(primeiroNome, l.url)];
+      }),
+    ];
+    const conteudo = linhas
+      .map((linha) => linha.map((campo) => `"${(campo || "").replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+ 
+    const blob = new Blob(["\uFEFF" + conteudo], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const nomeArquivo = `links_${tituloRodada.replace(/[^\w]+/g, "_") || "rodada"}.csv`;
+    a.href = url;
+    a.download = nomeArquivo;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
  
   return (
     <div>
-      <div
-        className="top-bar"
-        style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-      >
-        <div>
-          <div className="eyebrow">Painel de NPS</div>
-          <div className="title">Visão geral</div>
+      <div className="top-bar">
+        <Link href="/" style={{ color: "#f2e9d8", fontSize: 13, textDecoration: "none", opacity: 0.8 }}>
+          ← Voltar
+        </Link>
+        <div className="eyebrow" style={{ marginTop: 10 }}>
+          Nova campanha
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <Link
-            href="/nova-rodada"
-            style={{
-              background: "var(--gold)",
-              color: "#16324f",
-              padding: "8px 16px",
-              fontSize: 13,
-              fontWeight: 600,
-              textDecoration: "none",
-            }}
-          >
-            + Nova rodada
-          </Link>
-          <button
-            onClick={sair}
-            style={{
-              background: "none",
-              border: "1px solid rgba(242,233,216,0.4)",
-              color: "#f2e9d8",
-              padding: "8px 16px",
-              cursor: "pointer",
-              fontSize: 13,
-            }}
-          >
-            Sair
-          </button>
-        </div>
+        <div className="title">Criar rodada de NPS</div>
       </div>
  
       <div className="container">
-        {carregando ? (
-          <p>Carregando...</p>
+        {!linksGerados ? (
+          <div className="card" style={{ maxWidth: 480 }}>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Título da rodada
+              </label>
+              <input
+                value={titulo}
+                onChange={(e) => setTitulo(e.target.value)}
+                placeholder="Ex: NPS Outubro/2026"
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  border: "1px solid var(--border-input)",
+                  background: "var(--card-input)",
+                }}
+              />
+            </div>
+ 
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                Mês de referência
+              </label>
+              <input
+                type="month"
+                value={mes}
+                onChange={(e) => setMes(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  border: "1px solid var(--border-input)",
+                  background: "var(--card-input)",
+                }}
+              />
+            </div>
+ 
+            <p style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 16 }}>
+              Serão gerados links individuais para os {clientesAtivos.length} clientes ativos.
+            </p>
+ 
+            {erro && <p style={{ color: "var(--error)", fontSize: 13, marginBottom: 12 }}>{erro}</p>}
+ 
+            <button
+              onClick={criarRodada}
+              disabled={criando}
+              style={{
+                padding: "12px 20px",
+                background: "var(--ink)",
+                color: "#f2e9d8",
+                border: "none",
+                fontWeight: 600,
+                cursor: "pointer",
+                opacity: criando ? 0.6 : 1,
+              }}
+            >
+              {criando ? "Gerando..." : "Criar rodada e gerar links"}
+            </button>
+          </div>
         ) : (
-          <>
-            <div className="grid grid-3" style={{ marginBottom: 28 }}>
-              <div className="card">
-                <div className="stat-label">NPS médio geral</div>
-                <div className="stat">
-                  <Categoria score={npsGeral} />
-                </div>
-              </div>
-              <div className="card">
-                <div className="stat-label">Última rodada</div>
-                <div className="stat">
-                  <Categoria score={ultimaRodada?.nps_score} />
-                </div>
-                <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 4 }}>
-                  {ultimaRodada?.titulo || "Nenhuma rodada ainda"}
-                </div>
-              </div>
-              <div className="card">
-                <div className="stat-label">Clientes cadastrados</div>
-                <div className="stat">{clientes.length}</div>
-              </div>
+          <div className="card">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 16,
+              }}
+            >
+              <p style={{ fontSize: 14 }}>
+                Rodada criada! {linksGerados.length} link(s) gerado(s). O CSV já vem com a
+                mensagem pronta pra colar no WhatsApp ou email de cada cliente.
+              </p>
+              <button
+                onClick={baixarCSV}
+                style={{
+                  padding: "10px 18px",
+                  background: "var(--gold)",
+                  color: "#16324f",
+                  border: "none",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  marginLeft: 16,
+                }}
+              >
+                ⬇ Baixar lista (CSV)
+              </button>
             </div>
- 
-            <h2 style={{ fontFamily: "var(--font-display)", fontSize: 18, marginBottom: 12 }}>
-              Evolução do NPS por rodada
-            </h2>
-            <div className="card" style={{ marginBottom: 28 }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Rodada</th>
-                    <th>Mês</th>
-                    <th>Respostas</th>
-                    <th>NPS</th>
-                    <th></th>
+            <table>
+              <thead>
+                <tr>
+                  <th>Cliente</th>
+                  <th>Link do formulário</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linksGerados.map((l, i) => (
+                  <tr key={i}>
+                    <td>{l.nome}</td>
+                    <td style={{ fontSize: 12, wordBreak: "break-all" }}>{l.url}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {rodadas.map((r) => (
-                    <tr key={r.survey_id}>
-                      <td>{r.titulo}</td>
-                      <td>
-                        {new Date(r.mes_referencia + "T12:00:00").toLocaleDateString("pt-BR", {
-                          month: "long",
-                          year: "numeric",
-                        })}
-                      </td>
-                      <td>{r.total_respostas}</td>
-                      <td>{r.nps_score ?? "—"}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          onClick={() => apagarRodada(r)}
-                          disabled={apagando === r.survey_id}
-                          style={{
-                            background: "none",
-                            border: "1px solid var(--error)",
-                            color: "var(--error)",
-                            fontSize: 12,
-                            padding: "4px 10px",
-                            cursor: "pointer",
-                            opacity: apagando === r.survey_id ? 0.5 : 1,
-                          }}
-                        >
-                          {apagando === r.survey_id ? "Apagando..." : "Apagar"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {rodadas.length === 0 && (
-                    <tr>
-                      <td colSpan={5} style={{ color: "var(--ink-soft)" }}>
-                        Nenhuma rodada de NPS enviada ainda.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
- 
-            <h2 style={{ fontFamily: "var(--font-display)", fontSize: 18, marginBottom: 12 }}>
-              Clientes
-            </h2>
-            <div className="card">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Nome</th>
-                    <th>Empresa</th>
-                    <th>Respostas</th>
-                    <th>Nota média</th>
-                    <th>NPS</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {clientes.map((c) => (
-                    <tr key={c.client_id}>
-                      <td>
-                        <Link className="link-row" href={`/clientes/${c.client_id}`}>
-                          {c.nome}
-                        </Link>
-                      </td>
-                      <td>{c.empresa || "—"}</td>
-                      <td>{c.total_respostas}</td>
-                      <td>{c.nota_media ?? "—"}</td>
-                      <td>{c.nps_score_medio ?? "—"}</td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          onClick={() => apagarCliente(c)}
-                          disabled={apagando === c.client_id}
-                          style={{
-                            background: "none",
-                            border: "1px solid var(--error)",
-                            color: "var(--error)",
-                            fontSize: 12,
-                            padding: "4px 10px",
-                            cursor: "pointer",
-                            opacity: apagando === c.client_id ? 0.5 : 1,
-                          }}
-                        >
-                          {apagando === c.client_id ? "Apagando..." : "Apagar"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {clientes.length === 0 && (
-                    <tr>
-                      <td colSpan={6} style={{ color: "var(--ink-soft)" }}>
-                        Nenhum cliente cadastrado ainda.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
