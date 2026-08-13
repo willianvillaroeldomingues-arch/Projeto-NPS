@@ -29,18 +29,25 @@ export default function VerRodadaPage() {
   useEffect(() => {
     if (!pronto || !id) return;
     async function carregar() {
-      const [{ data: sv }, { data: fl }] = await Promise.all([
-        supabase.from("nps_surveys").select("*").eq("id", id).single(),
-        supabase
-          .from("nps_form_links")
-          .select("token, respondido, clients(id, nome)")
-          .eq("survey_id", id),
-      ]);
+      const { data: sv } = await supabase.from("nps_surveys").select("*").eq("id", id).single();
+      const { data: fl } = await supabase
+        .from("nps_form_links")
+        .select("token, respondido, client_id")
+        .eq("survey_id", id);
+ 
       setSurvey(sv);
+ 
+      const clientIds = (fl || []).map((l) => l.client_id);
+      let clientesPorId = {};
+      if (clientIds.length > 0) {
+        const { data: cls } = await supabase.from("clients").select("id, nome").in("id", clientIds);
+        clientesPorId = Object.fromEntries((cls || []).map((c) => [c.id, c.nome]));
+      }
+ 
       const base = typeof window !== "undefined" ? window.location.origin : "";
       const resultado = (fl || [])
         .map((l) => ({
-          nome: l.clients?.nome || "—",
+          nome: clientesPorId[l.client_id] || "—",
           respondido: l.respondido,
           url: `${base}/responder/${l.token}`,
         }))
@@ -53,7 +60,13 @@ export default function VerRodadaPage() {
  
   if (!pronto) return null;
   if (carregando) return <div className="container">Carregando...</div>;
-  if (!survey) return <div className="container">Rodada não encontrada.</div>;
+  if (!survey)
+    return (
+      <div className="container">
+        <p>Rodada não encontrada, ou você não tem permissão para vê-la.</p>
+        <Link href="/">← Voltar ao painel</Link>
+      </div>
+    );
  
   function baixarCSV() {
     const linhas = [
@@ -155,4 +168,6 @@ export default function VerRodadaPage() {
       </div>
     </div>
   );
+}
+ 
 }
