@@ -147,7 +147,6 @@ export default function DashboardPage() {
             </div>
  
             <h2 style={{ fontFamily: "var(--font-display)", fontSize: 18, marginBottom: 12 }}>
-              Evolução do NPS por rodada
             </h2>
             <div className="card" style={{ marginBottom: 28 }}>
               <table>
